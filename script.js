@@ -53,16 +53,36 @@ async function hmacSha256Hex(key, message) {
     .map(function(b) { return b.toString(16).padStart(2, "0"); }).join("");
 }
 
+/**
+ * Fecha pública del día en zona America/El_Salvador (yyyy-MM-dd).
+ * Debe coincidir EXACTAMENTE con Utilities.formatDate(..., "GMT-6", "yyyy-MM-dd")
+ * del backend. Se evita el truco toLocaleString + new Date (falla en muchos navegadores).
+ */
 function clavePublicaHoy() {
-  var ahora = new Date(new Date().toLocaleString("en-US", { timeZone: "America/El_Salvador" }));
-  return ahora.getFullYear() + "-" +
-    String(ahora.getMonth() + 1).padStart(2, "0") + "-" +
-    String(ahora.getDate()).padStart(2, "0");
+  try {
+    // en-CA produce yyyy-MM-dd de forma fiable
+    return new Intl.DateTimeFormat("en-CA", {
+      timeZone: "America/El_Salvador",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit"
+    }).format(new Date());
+  } catch (e) {
+    // Fallback: offset fijo GMT-6 (El Salvador no usa horario de verano)
+    var d = new Date(Date.now() - 6 * 60 * 60 * 1000);
+    var y = d.getUTCFullYear();
+    var m = String(d.getUTCMonth() + 1).padStart(2, "0");
+    var day = String(d.getUTCDate()).padStart(2, "0");
+    return y + "-" + m + "-" + day;
+  }
 }
 
 /**
  * Firma un objeto de parámetros y devuelve una Promise con los
  * parámetros originales + _nonce, _ts, _hmac añadidos.
+ *
+ * IMPORTANTE: se envían TODOS los campos firmados (incluso vacíos como ""),
+ * para que el backend reconstruya el mensaje canónico de forma idéntica.
  *
  * @param {string} action   - Nombre de la acción
  * @param {Object} fields   - {campo: valor} que se enviarán
@@ -73,8 +93,13 @@ async function firmarPayload(action, fields, key) {
   var ts    = String(Math.floor(Date.now() / 1000));
   var clave = key || clavePublicaHoy();
 
-  var camposOrdenados = Object.keys(fields).sort().map(function(k) {
-    return k + "=" + (fields[k] !== undefined && fields[k] !== null ? fields[k] : "");
+  // Normalizar a string y ordenar alfabéticamente (igual que el backend)
+  var keys = Object.keys(fields).sort();
+  var camposOrdenados = keys.map(function(k) {
+    var v = fields[k];
+    if (v === undefined || v === null) v = "";
+    else v = String(v);
+    return k + "=" + v;
   }).join("|");
   var mensaje = action + "|" + nonce + "|" + ts + "|" + camposOrdenados;
 
@@ -82,10 +107,12 @@ async function firmarPayload(action, fields, key) {
 
   var params = new URLSearchParams();
   params.append("action", action);
-  Object.keys(fields).forEach(function(k) {
-    if (fields[k] !== undefined && fields[k] !== null && fields[k] !== "") {
-      params.append(k, fields[k]);
-    }
+  // Enviar TODOS los campos firmados, incluidos vacíos, para evitar desfase HMAC
+  keys.forEach(function(k) {
+    var v = fields[k];
+    if (v === undefined || v === null) v = "";
+    else v = String(v);
+    params.append(k, v);
   });
   params.append("_nonce", nonce);
   params.append("_ts",    ts);
@@ -581,7 +608,11 @@ function crearNuevaClave(nombre, docente, telefono, correo, cumple, hp, alertBox
       if (dataPost.result === "success") {
         document.getElementById("codGenerado").textContent = claveNueva;
         containerClave.style.display = "block";
-        showToast("🎉 ¡Nueva clave permanente creada!", "success");
+        if (dataPost.email_enviado) {
+          showToast("🎉 ¡Clave creada y enviada a tu correo!", "success");
+        } else {
+          showToast("🎉 ¡Nueva clave permanente creada!", "success");
+        }
         document.getElementById("form-keygen").reset();
       } else {
         alertBox.textContent = dataPost.message || "❌ No se pudo guardar la clave.";
